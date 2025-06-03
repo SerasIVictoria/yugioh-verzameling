@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yu-Gi-Oh! Verzameling Manager</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome CDN -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"></link>
+    <!-- Google Fonts - Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        /* Aangepaste scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        .dark ::-webkit-scrollbar-track {
+            background: #333;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+        }
+        .dark ::-webkit-scrollbar-thumb {
+            background: #555;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+        .dark ::-webkit-scrollbar-thumb:hover {
+            background: #777;
+        }
+    </style>
+    <!-- React & ReactDOM CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel CDN for JSX transformation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        function App() {
+            const [cardSearchName, setCardSearchName] = useState('');
+            const [searchResults, setSearchResults] = useState([]);
+            const [selectedCardData, setSelectedCardData] = useState(null);
+            const [selectedSetCode, setSelectedSetCode] = useState('');
+            const [quantity, setQuantity] = useState(1);
+            const [purchasePrice, setPurchasePrice] = useState('');
+            const [collection, setCollection] = useState([]);
+            const [loading, setLoading] = useState(false);
+            const [message, setMessage] = useState('');
+            const [error, setError] = useState('');
+            const [isDarkMode, setIsDarkMode] = useState(false); // New state for dark mode
+
+            // State for filtering and sorting
+            const [filterText, setFilterText] = useState('');
+            const [filterType, setFilterType] = useState(''); // New filter for card type
+            const [filterAttribute, setFilterAttribute] = useState(''); // New filter for card attribute
+            const [sortBy, setSortBy] = useState('cardName'); // Default sort by card name
+            const [sortOrder, setSortOrder] = useState('asc'); // Default ascending
+
+            // State for the card detail/edit modal
+            const [showCardDetailModal, setShowCardDetailModal] = useState(false);
+            const [cardInDetailView, setCardInDetailView] = useState(null);
+
+            // State for the confirmation modal (delete)
+            const [showConfirmModal, setShowConfirmModal] = useState(false);
+            const [cardToDelete, setCardToDelete] = useState(null);
+
+            const YGOPRODECK_API_BASE_URL = 'https://db.ygoprodeck.com/api/v7';
+
+
+            // Effect to load collection and dark mode preference from Local Storage on initial render
+            useEffect(() => {
+                try {
+                    const storedCollection = localStorage.getItem('yugiohCollection');
+                    if (storedCollection) {
+                        setCollection(JSON.parse(storedCollection));
+                    }
+                    const storedDarkMode = localStorage.getItem('yugiohDarkMode');
+                    if (storedDarkMode !== null) {
+                        setIsDarkMode(JSON.parse(storedDarkMode));
+                    } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                        // Default to system preference if no stored preference
+                        setIsDarkMode(true);
+                    }
+                } catch (e) {
+                    console.error("Fout bij het laden van gegevens uit Local Storage:", e);
+                    setError("Fout bij het laden van je gegevens uit lokale opslag.");
+                }
+            }, []);
+
+            // Effect to save collection and dark mode preference to Local Storage whenever it changes
+            useEffect(() => {
+                try {
+                    localStorage.setItem('yugiohCollection', JSON.stringify(collection));
+                    localStorage.setItem('yugiohDarkMode', JSON.stringify(isDarkMode));
+                    if (isDarkMode) {
+                        document.documentElement.classList.add('dark');
+                    } else {
+                        document.documentElement.classList.remove('dark');
+                    }
+                } catch (e) {
+                    console.error("Fout bij het opslaan van gegevens in Local Storage:", e);
+                    setError("Fout bij het opslaan van je gegevens in lokale opslag.");
+                }
+            }, [collection, isDarkMode]);
+
+            // Function to fetch card information from YGOPRODeck API
+            const getCardInfoFromYGOPRODeck = async (nameOrId, isId = false) => {
+                try {
+                    const param = isId ? `id=${nameOrId}` : `fname=${encodeURIComponent(nameOrId)}`;
+                    const response = await fetch(`${YGOPRODECK_API_BASE_URL}/cardinfo.php?${param}`);
+                    if (!response.ok) {
+                        if (response.status === 400) {
+                            return null; // Card not found
+                        }
+                        throw new Error(`HTTP-fout van YGOPRODeck! status: ${response.status}`);
+                    }
+                    const data = await response.json();
+                    if (data && data.data && data.data.length > 0) {
+                        return data.data[0];
+                    }
+                    return null;
+                } catch (err) {
+                    console.error("Fout bij het ophalen van kaartinformatie van YGOPRODeck:", err);
+                    setError(`Fout bij het ophalen van kaartinformatie: ${err.message}`);
+                    return null;
+                }
+            };
+
+            // Function to get the most accurate price for a card
+            const getAccurateCardPrice = (cardData) => {
+                let price = null;
+
+                // 1. Probeer de algemene cardmarket_price (meestal de meest prominente op de website)
+                if (cardData.card_prices && cardData.card_prices.length > 0) {
+                    const cardmarketPrice = parseFloat(cardData.card_prices[0].cardmarket_price);
+                    if (cardmarketPrice > 0) {
+                        return cardmarketPrice;
+                    }
+                }
+
+                // 2. Als de algemene cardmarket_price niet beschikbaar is, zoek de laagste set_price
+                if (cardData.card_sets && cardData.card_sets.length > 0) {
+                    let setPrices = [];
+                    cardData.card_sets.forEach(set => {
+                        const setPrice = parseFloat(set.set_price);
+                        if (setPrice > 0) {
+                            setPrices.push(setPrice);
+                        }
+                    });
+                    if (setPrices.length > 0) {
+                        return Math.min(...setPrices);
+                    }
+                }
+                
+                return 0; // Retourneert 0 als geen geldige prijs is gevonden
+            };
+
+
+            // Search cards based on entered name (uses YGOPRODeck)
+            const handleSearchCard = async () => {
+                setError('');
+                setMessage('');
+                setLoading(true);
+                setSearchResults([]);
+                setSelectedCardData(null);
+                setSelectedSetCode('');
+
+                if (!cardSearchName.trim()) {
+                    setError("Voer een kaartnaam in om te zoeken.");
+                    setLoading(false);
+                    return;
+                }
+
+                try {
+                    const data = await getCardInfoFromYGOPRODeck(cardSearchName);
+
+                    if (data) {
+                        setSearchResults([data]); // YGOPRODeck fname returns an array, but we want the first match for selection
+                        setMessage(`"${data.name}" gevonden.`);
+                    } else {
+                        setMessage(`Geen kaarten gevonden voor "${cardSearchName}".`);
+                    }
+                } catch (err) {
+                    console.error("Fout bij het zoeken naar kaarten:", err);
+                    setError(`Fout bij het zoeken naar kaarten: ${err.message}`);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            // Select a card from search results
+            const handleSelectCard = (card) => {
+                setSelectedCardData(card);
+                // Set the first set as default, if available
+                if (card.card_sets && card.card_sets.length > 0) {
+                    setSelectedSetCode(card.card_sets[0].set_code);
+                } else {
+                    setSelectedSetCode('');
+                }
+                setSearchResults([]); // Hide search results after selection
+            };
+
+            // Function to add a card to the collection
+            const handleAddCard = async () => {
+                setError('');
+                setMessage('');
+                setLoading(true);
+
+                if (!selectedCardData) {
+                    setError("Selecteer eerst een kaart uit de zoekresultaten.");
+                    setLoading(false);
+                    return;
+                }
+                if (!selectedSetCode && selectedCardData.card_sets && selectedCardData.card_sets.length > 0) {
+                    setError("Selecteer een set voor de kaart.");
+                    setLoading(false);
+                    return;
+                }
+                if (quantity <= 0) {
+                    setError("Hoeveelheid moet positief zijn.");
+                    setLoading(false);
+                    return;
+                }
+                if (purchasePrice && parseFloat(purchasePrice) < 0) {
+                    setError("Aankoopprijs kan niet negatief zijn.");
+                    setLoading(false);
+                    return;
+                }
+
+                try {
+                    const cardId = selectedCardData.id;
+                    const selectedSet = selectedCardData.card_sets?.find(set => set.set_code === selectedSetCode);
+                    const setName = selectedSet?.set_name || 'N/A';
+                    const setRarity = selectedSet?.set_rarity || 'N/A';
+                    const cardImageUrl = selectedCardData.card_images?.[0]?.image_url || 'https://via.placeholder.com/128x180?text=Geen+Afbeelding';
+
+                    // Get current price using the new logic (prioritize general Cardmarket price)
+                    const currentPrice = getAccurateCardPrice(selectedCardData);
+                    
+                    // Store individual prices from YGOPRODeck for display in detail modal
+                    // Ensure they are numbers or 'N/A'
+                    const tcgplayerPrice = parseFloat(selectedCardData.card_prices?.[0]?.tcgplayer_price) || 'N/A';
+                    const cardmarketPrice = parseFloat(selectedCardData.card_prices?.[0]?.cardmarket_price) || 'N/A';
+                    const ebayPrice = parseFloat(selectedCardData.card_prices?.[0]?.ebay_price) || 'N/A';
+
+
+                    // Generate a unique ID for the card in the local collection
+                    const localCardId = `${cardId}_${selectedSetCode}`; 
+                    
+                    const existingCardIndex = collection.findIndex(c => c.localId === localCardId);
+
+                    if (existingCardIndex !== -1) {
+                        // Update existing card
+                        const updatedCollection = [...collection];
+                        updatedCollection[existingCardIndex] = {
+                            ...updatedCollection[existingCardIndex],
+                            quantity: updatedCollection[existingCardIndex].quantity + quantity,
+                            currentPrice: currentPrice, // Update primary current price
+                            tcgplayerPrice: tcgplayerPrice,
+                            cardmarketPrice: cardmarketPrice,
+                            ebayPrice: ebayPrice,
+                            lastUpdated: new Date().toISOString(),
+                        };
+                        setCollection(updatedCollection);
+                        setMessage(`Hoeveelheid voor '${selectedCardData.name} (${setName})' bijgewerkt en prijzen ververst.`);
+                    } else {
+                        // Add a new card
+                        const newCard = {
+                            localId: localCardId, // Unique ID for Local Storage
+                            cardName: selectedCardData.name,
+                            cardId: cardId, // Original YGOProDeck ID
+                            setCode: selectedSetCode,
+                            setName: setName,
+                            setRarity: setRarity,
+                            quantity: quantity,
+                            purchasePrice: parseFloat(purchasePrice) || 0,
+                            currentPrice: currentPrice, // Store primary current price
+                            tcgplayerPrice: tcgplayerPrice, // Store individual prices
+                            cardmarketPrice: cardmarketPrice,
+                            ebayPrice: ebayPrice,
+                            lastUpdated: new Date().toISOString(),
+                            imageUrl: cardImageUrl, // Store image URL
+                            cardDescription: selectedCardData.desc, // Store description
+                            cardType: selectedCardData.type,
+                            cardRace: selectedCardData.race,
+                            cardAttribute: selectedCardData.attribute,
+                            cardLevel: selectedCardData.level,
+                            cardATK: selectedCardData.atk,
+                            cardDEF: selectedCardData.def,
+                        };
+                        setCollection(prevCollection => [...prevCollection, newCard]);
+                        setMessage(`'${selectedCardData.name} (${setName})' succesvol toegevoegd aan je verzameling!`);
+                    }
+
+                    // Reset forms and selections
+                    setCardSearchName('');
+                    setSearchResults([]);
+                    setSelectedCardData(null);
+                    setSelectedSetCode('');
+                    setQuantity(1);
+                    setPurchasePrice('');
+                } catch (err) {
+                    console.error("Fout bij het toevoegen/bijwerken van kaart:", err);
+                    setError(`Fout bij het toevoegen/bijwerken van kaart: ${err.message}`);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            // Function to refresh prices of all cards (uses YGOPRODeck)
+            const handleRefreshPrices = async () => {
+                setError('');
+                setMessage('');
+                setLoading(true);
+                let updatedCount = 0;
+                let failedCount = 0;
+                const newCollection = [...collection];
+
+                for (let i = 0; i < newCollection.length; i++) {
+                    const card = newCollection[i];
+                    try {
+                        // Fetch full card data from YGOPRODeck again to get latest prices
+                        const fullCardData = await getCardInfoFromYGOPRODeck(card.cardId, true); // Use card ID for direct lookup
+                        
+                        if (fullCardData) {
+                            // Use the new logic to get the accurate price
+                            const newPrimaryCurrentPrice = getAccurateCardPrice(fullCardData); 
+                            
+                            const newTcgplayerPrice = parseFloat(fullCardData.card_prices?.[0]?.tcgplayer_price) || 'N/A';
+                            const newCardmarketPrice = parseFloat(fullCardData.card_prices?.[0]?.cardmarket_price) || 'N/A';
+                            const newEbayPrice = parseFloat(fullCardData.card_prices?.[0]?.ebay_price) || 'N/A';
+
+                            // Check if any price changed
+                            if (
+                                newPrimaryCurrentPrice !== card.currentPrice ||
+                                newTcgplayerPrice !== card.tcgplayerPrice ||
+                                newCardmarketPrice !== card.cardmarketPrice ||
+                                newEbayPrice !== card.ebayPrice
+                            ) {
+                                newCollection[i] = {
+                                    ...card,
+                                    currentPrice: newPrimaryCurrentPrice,
+                                    tcgplayerPrice: newTcgplayerPrice,
+                                    cardmarketPrice: newCardmarketPrice,
+                                    ebayPrice: newEbayPrice,
+                                    lastUpdated: new Date().toISOString(),
+                                };
+                                updatedCount++;
+                            }
+                        } else {
+                            failedCount++;
+                            console.warn(`Could not find updated data for card with ID: ${card.cardId}`);
+                        }
+                    } catch (err) {
+                        console.warn(`Could not refresh price for ${card.cardName} (${card.setCode}): ${err.message}`);
+                        failedCount++;
+                    }
+                    // Small delay to prevent hitting API rate limits too quickly
+                    await new Promise(resolve => setTimeout(resolve, 50)); // Reduced delay as YGOPRODeck is generally faster
+                }
+                setCollection(newCollection);
+                setMessage(`Prijzen ververst. ${updatedCount} bijgewerkt, ${failedCount} mislukt/niet gevonden.`);
+                setLoading(false);
+            };
+
+            // Open confirmation modal for deletion
+            const openConfirmModal = (card) => {
+                setCardToDelete(card);
+                setShowConfirmModal(true);
+            };
+
+            // Confirm card deletion
+            const confirmDeleteCard = async () => {
+                setError('');
+                setMessage('');
+                setShowConfirmModal(false);
+
+                if (!cardToDelete) {
+                    setError("Selected card not found in collection.");
+                    return;
+                }
+
+                setLoading(true);
+                try {
+                    setCollection(prevCollection => prevCollection.filter(card => card.localId !== cardToDelete.localId));
+                    setMessage(`'${cardToDelete.cardName} (${cardToDelete.setName})' successfully removed.`);
+                    setCardToDelete(null);
+                } catch (err) {
+                    console.error("Error deleting card:", err);
+                    setError(`Error deleting card: ${err.message}`);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            // Cancel card deletion
+            const cancelDeleteCard = () => {
+                setShowConfirmModal(false);
+                setCardToDelete(null);
+            };
+
+            // Removed import/export functions
+            // const handleExportCollection = () => { /* ... */ };
+            // const handleImportCollection = (event) => { /* ... */ };
+
+            // --- Filter and Sort ---
+            const filteredAndSortedCollection = React.useMemo(() => {
+                let currentCollection = [...collection];
+
+                // 1. Filter
+                if (filterText) {
+                    const lowerCaseFilter = filterText.toLowerCase();
+                    currentCollection = currentCollection.filter(card =>
+                        (card.cardName && card.cardName.toLowerCase().includes(lowerCaseFilter)) ||
+                        (card.setName && card.setName.toLowerCase().includes(lowerCaseFilter)) ||
+                        (card.setCode && card.setCode.toLowerCase().includes(lowerCaseFilter)) ||
+                        (card.setRarity && card.setRarity.toLowerCase().includes(lowerCaseFilter))
+                    );
+                }
+                if (filterType) {
+                    currentCollection = currentCollection.filter(card => card.cardType === filterType);
+                }
+                if (filterAttribute) {
+                    currentCollection = currentCollection.filter(card => card.cardAttribute === filterAttribute);
+                }
+
+
+                // 2. Sort
+                currentCollection.sort((a, b) => {
+                    let valA, valB;
+                    if (sortBy === 'cardName' || sortBy === 'setName' || sortBy === 'setRarity' || sortBy === 'cardType') {
+                        valA = (a[sortBy] || '').toLowerCase();
+                        valB = (b[sortBy] || '').toLowerCase();
+                    } else if (sortBy === 'quantity' || sortBy === 'purchasePrice' || sortBy === 'currentPrice') {
+                        valA = typeof a[sortBy] === 'number' ? a[sortBy] : (sortBy === 'currentPrice' ? 0 : 0); // Handle 'N/A' for sorting
+                        valB = typeof b[sortBy] === 'number' ? b[sortBy] : (sortBy === 'currentPrice' ? 0 : 0);
+                    } else if (sortBy === 'profitLoss') {
+                        valA = (typeof a.currentPrice === 'number' ? a.currentPrice : 0) * a.quantity - (typeof a.purchasePrice === 'number' ? a.purchasePrice : 0) * a.quantity;
+                        valB = (typeof b.currentPrice === 'number' ? b.currentPrice : 0) * b.quantity - (typeof b.purchasePrice === 'number' ? b.purchasePrice : 0) * b.quantity;
+                    } else if (sortBy === 'lastUpdated') {
+                        valA = new Date(a.lastUpdated || 0).getTime();
+                        valB = new Date(b.lastUpdated || 0).getTime();
+                    } else { // Default to cardName
+                         valA = (a.cardName || '').toLowerCase();
+                         valB = (b.cardName || '').toLowerCase();
+                    }
+
+                    if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
+                    if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
+                    return 0;
+                });
+
+                return currentCollection;
+            }, [collection, filterText, filterType, filterAttribute, sortBy, sortOrder]);
+
+
+            // Extract unique card types and attributes for filter dropdowns
+            const uniqueCardTypes = React.useMemo(() => {
+                const types = new Set();
+                collection.forEach(card => {
+                    if (card.cardType) types.add(card.cardType);
+                });
+                return [''].concat([...types].sort()); // Add empty for "All" option
+            }, [collection]);
+
+            const uniqueCardAttributes = React.useMemo(() => {
+                const attributes = new Set();
+                collection.forEach(card => {
+                    if (card.cardAttribute) attributes.add(card.cardAttribute);
+                });
+                return [''].concat([...attributes].sort()); // Add empty for "All" option
+            }, [collection]);
+
+            // --- Detail View / Edit Modal ---
+            const openCardDetailModal = (card) => {
+                setCardInDetailView(card);
+                setShowCardDetailModal(true);
+            };
+
+            const closeCardDetailModal = () => {
+                setShowCardDetailModal(false);
+                setCardInDetailView(null);
+            };
+
+            // Calculate total value and profit/loss
+            const totalCurrentValue = collection.reduce((sum, card) => sum + (typeof card.currentPrice === 'number' ? card.currentPrice * card.quantity : 0), 0);
+            const totalPurchaseValue = collection.reduce((sum, card) => sum + (typeof card.purchasePrice === 'number' ? card.purchasePrice * card.quantity : 0), 0);
+            const totalProfitLoss = totalCurrentValue - totalPurchaseValue;
+
+            return (
+                <div className={`min-h-screen ${isDarkMode ? 'bg-gray-900 text-gray-100' : 'bg-gray-100 text-gray-900'} p-4 font-inter transition-colors duration-300`}>
+                    <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} max-w-6xl mx-auto rounded-lg shadow-xl p-6 md:p-8`}>
+                        <div className="flex justify-between items-center mb-8">
+                            <h1 className="text-3xl md:text-4xl font-bold text-indigo-600 dark:text-indigo-400">
+                                Yu-Gi-Oh! Verzameling Manager
+                            </h1>
+                            <button
+                                onClick={() => setIsDarkMode(!isDarkMode)}
+                                className="p-2 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                                title={isDarkMode ? "Schakel naar Lichte Modus" : "Schakel naar Donkere Modus"}
+                            >
+                                {isDarkMode ? <i className="fas fa-sun"></i> : <i className="fas fa-moon"></i>}
+                            </button>
+                        </div>
+
+                        {loading && (
+                            <div className="flex items-center justify-center mb-4">
+                                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
+                                <p className="ml-3 text-indigo-600 dark:text-indigo-400">Laden...</p>
+                            </div>
+                        )}
+                        {message && (
+                            <div className="bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 p-3 rounded-md mb-4 text-center">
+                                {message}
+                            </div>
+                        )}
+                        {error && (
+                            <div className="bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 p-3 rounded-md mb-4 text-center">
+                                {error}
+                            </div>
+                        )}
+
+                        {/* Card Add Section */}
+                        <div className="mb-8 p-6 border border-gray-200 dark:border-gray-700 rounded-lg shadow-sm">
+                            <h2 className="text-2xl font-semibold mb-4 text-indigo-700 dark:text-indigo-300">Kaart Toevoegen</h2>
+                            
+                            {/* Search Bar */}
+                            <div className="flex flex-col sm:flex-row gap-4 mb-4">
+                                <input
+                                    type="text"
+                                    value={cardSearchName}
+                                    onChange={(e) => setCardSearchName(e.target.value)}
+                                    placeholder="Zoek kaart op naam (bijv. Dark Magician)"
+                                    className="flex-grow p-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                />
+                                <button
+                                    onClick={handleSearchCard}
+                                    disabled={loading}
+                                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <i className="fas fa-search mr-2"></i> Zoek Kaart
+                                </button>
+                            </div>
+
+                            {/* Search Results */}
+                            {searchResults.length > 0 && (
+                                <div className="mb-4 max-h-60 overflow-y-auto border border-gray-300 dark:border-gray-600 rounded-md">
+                                    <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                                        <thead className="bg-gray-50 dark:bg-gray-700"><tr>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Afb.</th>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Naam</th>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Type</th>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Sets (Prijs)</th>
+                                        </tr></thead>
+                                        <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                                            {searchResults.map((card) => (
+                                                <tr key={card.id} onClick={() => handleSelectCard(card)} className="cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900">
+                                                    <td className="px-6 py-4 whitespace-nowrap">
+                                                        <img src={card.card_images?.[0]?.image_url_small || 'https://via.placeholder.com/60x90?text=NA'} alt={card.name} className="h-20 w-auto object-cover rounded-sm"/> {/* Grotere afbeelding */}
+                                                    </td>
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100">{card.name}</td>
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{card.type}</td>
+                                                    <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400">
+                                                        {card.card_sets && card.card_sets.length > 0 ? (
+                                                            <select
+                                                                value={selectedCardData && selectedCardData.id === card.id ? selectedSetCode : (card.card_sets[0].set_code || '')}
+                                                                onChange={(e) => {
+                                                                    handleSelectCard(card);
+                                                                    setSelectedSetCode(e.target.value);
+                                                                }}
+                                                                onClick={(e) => e.stopPropagation()}
+                                                                className="p-1 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                                            >
+                                                                {card.card_sets.map((set, idx) => (
+                                                                    <option key={`${card.id}-${set.set_code}-${idx}`} value={set.set_code}>
+                                                                        {set.set_name} ({set.set_code})
+                                                                    </option>
+                                                                ))}
+                                                            </select>
+                                                        ) : 'Geen sets beschikbaar'}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+
+                            {/* Geselecteerde Kaart voor Toevoeging */}
+                            {selectedCardData && (
+                                <div className="mb-6 p-4 flex flex-col md:flex-row items-center gap-4 border border-indigo-300 dark:border-indigo-600 rounded-lg bg-indigo-50 dark:bg-indigo-900">
+                                    <img src={selectedCardData.card_images?.[0]?.image_url_small || 'https://via.placeholder.com/60x90?text=NA'} alt={selectedCardData.name} className="w-24 h-auto object-cover rounded-md shadow-md"/> {/* Grotere afbeelding */}
+                                    <div className="flex-grow">
+                                        <h3 className="text-lg font-semibold mb-2 text-indigo-800 dark:text-indigo-200">Geselecteerde Kaart voor Toevoeging:</h3>
+                                        <p className="text-gray-800 dark:text-gray-200 text-sm">
+                                            **Naam:** {selectedCardData.name} <br/>
+                                            **Type:** {selectedCardData.type} <br/>
+                                            **Set:**
+                                            <select
+                                                value={selectedSetCode}
+                                                onChange={(e) => setSelectedSetCode(e.target.value)}
+                                                className="ml-2 p-1 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm"
+                                            >
+                                                {selectedCardData.card_sets && selectedCardData.card_sets.map((set, idx) => (
+                                                    <option key={`${selectedCardData.id}-${set.set_code}-${idx}`} value={set.set_code}>
+                                                        {set.set_name} ({set.set_code})
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            <br/>
+                                            **Zeldzaamheid:** {selectedCardData.card_sets?.find(set => set.set_code === selectedSetCode)?.set_rarity || 'N/A'}
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Toevoegformulier */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                                <div>
+                                    <label htmlFor="quantity" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hoeveelheid</label>
+                                    <input
+                                        type="number"
+                                        id="quantity"
+                                        value={quantity}
+                                        onChange={(e) => setQuantity(parseInt(e.target.value) || 0)}
+                                        min="1"
+                                        className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    />
+                                </div>
+                                <div>
+                                    <label htmlFor="purchasePrice" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Aankoopprijs (€)</label>
+                                    <input
+                                        type="number"
+                                        id="purchasePrice"
+                                        value={purchasePrice}
+                                        onChange={(e) => setPurchasePrice(e.target.value)}
+                                        placeholder="0.00"
+                                        step="0.01"
+                                        className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    />
+                                </div>
+                            </div>
+                            <button
+                                onClick={handleAddCard}
+                                disabled={loading || !selectedCardData}
+                                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                <i className="fas fa-plus-circle mr-2"></i> Voeg Kaart Toe aan Verzameling
+                            </button>
+                        </div>
+
+                        {/* Verzameling overzicht sectie */}
+                        <div className="mb-8 p-6 border border-gray-200 dark:border-gray-700 rounded-lg shadow-sm">
+                            <h2 className="text-2xl font-semibold mb-4 text-indigo-700 dark:text-indigo-300">Mijn Verzameling</h2>
+
+                            {/* Filter en Sorteer Controls */}
+                            <div className="flex flex-col sm:flex-row gap-4 mb-6 items-center">
+                                <input
+                                    type="text"
+                                    placeholder="Filter kaarten (Naam, Set, Code, Zeldzaamheid)..."
+                                    value={filterText}
+                                    onChange={(e) => setFilterText(e.target.value)}
+                                    className="flex-grow p-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                />
+                                <select
+                                    value={filterType}
+                                    onChange={(e) => setFilterType(e.target.value)}
+                                    className="p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                >
+                                    <option value="">Alle Types</option>
+                                    {uniqueCardTypes.map(type => type && <option key={type} value={type}>{type}</option>)}
+                                </select>
+                                <select
+                                    value={filterAttribute}
+                                    onChange={(e) => setFilterAttribute(e.target.value)}
+                                    className="p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                >
+                                    <option value="">Alle Attributen</option>
+                                    {uniqueCardAttributes.map(attr => attr && <option key={attr} value={attr}>{attr}</option>)}
+                                </select>
+                                <div className="flex gap-2 items-center">
+                                    <label htmlFor="sortBy" className="text-sm font-medium text-gray-700 dark:text-gray-300">Sorteer op:</label>
+                                    <select
+                                        id="sortBy"
+                                        value={sortBy}
+                                        onChange={(e) => setSortBy(e.target.value)}
+                                        className="p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    >
+                                        <option value="cardName">Naam</option>
+                                        <option value="setName">Set Naam</option>
+                                        <option value="quantity">Hoeveelheid</option>
+                                        <option value="purchasePrice">Aankoopprijs</option>
+                                        <option value="currentPrice">Huidige Prijs</option>
+                                        <option value="profitLoss">Winst/Verlies</option>
+                                        <option value="lastUpdated">Laatst Bijgewerkt</option>
+                                    </select>
+                                    <button
+                                        onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                                        className="p-2 bg-gray-200 dark:bg-gray-700 rounded-md text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                                    >
+                                        {sortOrder === 'asc' ? <i className="fas fa-arrow-up"></i> : <i className="fas fa-arrow-down"></i>}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="overflow-x-auto rounded-lg shadow-md mb-4">
+                                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                                    <thead className="bg-gray-50 dark:bg-gray-700"><tr>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Afb.</th>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Naam</th>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Details</th>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Hvl.</th>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Aankoopprijs</th>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Huidige Prijs</th>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Winst/Verlies</th>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Laatst Bijgewerkt</th>
+                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Acties</th>
+                                        </tr></thead>
+                                    <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                                        {filteredAndSortedCollection.length === 0 ? (
+                                            <tr>
+                                                <td colSpan="9" className="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-500 dark:text-gray-400">
+                                                    {filterText || filterType || filterAttribute ? "Geen kaarten gevonden die overeenkomen met je filter(s)." : "Nog geen kaarten in je verzameling. Voeg er een toe!"}
+                                                </td>
+                                            </tr>
+                                        ) : (
+                                            filteredAndSortedCollection.map((card) => {
+                                                const profitLoss = (typeof card.currentPrice === 'number' && typeof card.purchasePrice === 'number') ? (card.currentPrice - card.purchasePrice) * card.quantity : 'N/A';
+                                                const profitLossClass = (typeof profitLoss === 'number') ? (profitLoss >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400') : '';
+                                                return (
+                                                    <tr
+                                                        key={card.localId} // Gebruik localId als key
+                                                        onClick={() => openCardDetailModal(card)} // Open detail modal on row click
+                                                        className={`cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700`}
+                                                    >
+                                                        <td className="px-6 py-4 whitespace-nowrap">
+                                                            <img src={card.imageUrl || 'https://via.placeholder.com/60x90?text=NA'} alt={card.cardName} className="h-20 w-auto object-cover rounded-sm"/> {/* Grotere afbeelding */}
+                                                        </td>
+                                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100">{card.cardName}</td>
+                                                        <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400">
+                                                            <div>Set: {card.setName} ({card.setCode})</div>
+                                                            <div>Zeldzaamheid: {card.setRarity}</div>
+                                                            <div>Type: {card.cardType} {card.cardAttribute ? `(${card.cardAttribute})` : ''}</div>
+                                                            {(card.cardLevel || card.cardATK) && (
+                                                                <div>{card.cardLevel ? `Lv: ${card.cardLevel}` : ''} {card.cardATK ? `ATK/DEF: ${card.cardATK}/${card.cardDEF}` : ''}</div>
+                                                            )}
+                                                        </td>
+                                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{card.quantity}</td>
+                                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">€{typeof card.purchasePrice === 'number' ? card.purchasePrice.toFixed(2) : 'N/A'}</td>
+                                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">€{typeof card.currentPrice === 'number' ? card.currentPrice.toFixed(2) : 'N/A'}</td>
+                                                        <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${profitLossClass}`}>
+                                                            {typeof profitLoss === 'number' ? `${profitLoss >= 0 ? '+' : ''}€${profitLoss.toFixed(2)}` : 'N/A'}
+                                                        </td>
+                                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                                                            {card.lastUpdated ? new Date(card.lastUpdated).toLocaleDateString('nl-NL') : 'N/A'}
+                                                        </td>
+                                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation(); // Voorkom dat de detailmodal opent
+                                                                    openConfirmModal(card);
+                                                                }}
+                                                                disabled={loading}
+                                                                className="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-600 font-bold py-1 px-2 rounded-md transition duration-150 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed"
+                                                            >
+                                                                <i className="fas fa-trash-alt"></i>
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div className="flex flex-col sm:flex-row justify-between items-center mt-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg shadow-inner">
+                                <div className="text-lg font-semibold mb-2 sm:mb-0">
+                                    Totale Huidige Waarde: <span className="text-indigo-600 dark:text-indigo-400">€{totalCurrentValue.toFixed(2)}</span>
+                                </div>
+                                <div className="text-lg font-semibold">
+                                    Totaal Winst/Verlies:
+                                    <span className={`${totalProfitLoss >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'} ml-2`}>
+                                        {totalProfitLoss >= 0 ? '+' : ''}€{totalProfitLoss.toFixed(2)}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col sm:flex-row justify-center gap-4 mt-6">
+                                <button
+                                    onClick={handleRefreshPrices}
+                                    disabled={loading || collection.length === 0}
+                                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <i className="fas fa-sync-alt mr-2"></i> Ververs Prijzen
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Card Detail/Edit Modal */}
+                    {showCardDetailModal && cardInDetailView && (
+                        <CardDetailModal 
+                            card={cardInDetailView} 
+                            onClose={closeCardDetailModal} 
+                            onUpdate={(updatedCard) => {
+                                setCollection(prevCollection => 
+                                    prevCollection.map(c => c.localId === updatedCard.localId ? updatedCard : c)
+                                );
+                                closeCardDetailModal();
+                                setMessage("Kaart succesvol bijgewerkt!");
+                            }}
+                            onError={setError}
+                        />
+                    )}
+
+                    {/* Confirmation Modal (Delete) */}
+                    {showConfirmModal && cardToDelete && (
+                        <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 p-4">
+                            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl max-w-sm w-full text-center">
+                                <h3 className="text-xl font-semibold mb-4 text-gray-900 dark:text-gray-100">Kaart Verwijderen</h3>
+                                <p className="text-gray-700 dark:text-gray-300 mb-6">
+                                    Weet je zeker dat je '<span className="font-bold">{cardToDelete.cardName} ({cardToDelete.setName})</span>' wilt verwijderen?
+                                </p>
+                                <div className="flex justify-center gap-4">
+                                    <button
+                                        onClick={cancelDeleteCard}
+                                        className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-md transition duration-150 ease-in-out"
+                                    >
+                                        Annuleren
+                                    </button>
+                                    <button
+                                        onClick={confirmDeleteCard}
+                                        className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition duration-150 ease-in-out"
+                                    >
+                                        Verwijderen
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // --- Card Detail/Edit Modal Component ---
+        function CardDetailModal({ card, onClose, onUpdate, onError }) {
+            const [editQuantity, setEditQuantity] = useState(card.quantity);
+            const [editPurchasePrice, setEditPurchasePrice] = useState(card.purchasePrice);
+            const [editMessage, setEditMessage] = useState('');
+            const [editError, setEditError] = useState('');
+
+            const handleUpdateCard = () => {
+                setEditMessage('');
+                setEditError('');
+                if (editQuantity <= 0) {
+                    setEditError("Hoeveelheid moet positief zijn.");
+                    return;
+                }
+                if (editPurchasePrice < 0) {
+                    setEditError("Aankoopprijs kan niet negatief zijn.");
+                    return;
+                }
+
+                const updatedCard = {
+                    ...card,
+                    quantity: editQuantity,
+                    purchasePrice: editPurchasePrice,
+                    lastUpdated: new Date().toISOString(), // Update timestamp
+                };
+                onUpdate(updatedCard);
+            };
+
+            return (
+                <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl max-w-2xl w-full relative">
+                        <button 
+                            onClick={onClose} 
+                            className="absolute top-3 right-3 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-2xl"
+                        >
+                            <i className="fas fa-times-circle"></i>
+                        </button>
+                        <h3 className="text-2xl font-semibold mb-4 text-indigo-700 dark:text-indigo-300 text-center">{card.cardName}</h3>
+                        
+                        {editMessage && <div className="bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 p-2 rounded-md mb-3 text-sm text-center">{editMessage}</div>}
+                        {editError && <div className="bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 p-2 rounded-md mb-3 text-sm text-center">{editError}</div>}
+
+                        <div className="flex flex-col md:flex-row gap-6 mb-6">
+                            <div className="flex-shrink-0 md:w-1/3 flex justify-center items-start">
+                                <img src={card.imageUrl || 'https://via.placeholder.com/256x370?text=Geen+Afbeelding'} alt={card.cardName} className="max-w-full h-auto object-cover rounded-md shadow-lg"/>
+                            </div>
+                            <div className="flex-grow md:w-2/3 text-gray-800 dark:text-gray-200">
+                                <p className="mb-2">**Set:** {card.setName} ({card.setCode})</p>
+                                <p className="mb-2">**Zeldzaamheid:** {card.setRarity}</p>
+                                <p className="mb-2">**Type:** {card.cardType}</p>
+                                {card.cardRace && <p className="mb-2">**Ras:** {card.cardRace}</p>}
+                                {card.cardAttribute && <p className="mb-2">**Attribuut:** {card.cardAttribute}</p>}
+                                {card.cardLevel && <p className="mb-2">**Level/Rang:** {card.cardLevel}</p>}
+                                {card.cardATK && <p className="mb-2">**ATK/DEF:** {card.cardATK} / {card.cardDEF}</p>}
+                                <p className="mb-2">**Beschrijving:** <span className="text-sm italic block mt-1">{card.cardDescription}</span></p>
+
+                                <hr className="my-4 border-gray-200 dark:border-gray-700"/>
+
+                                <p className="mb-2">**TCGPlayer Prijs:** €{typeof card.tcgplayerPrice === 'number' ? card.tcgplayerPrice.toFixed(2) : 'N/A'}</p>
+                                <p className="mb-2">**Cardmarket Prijs:** €{typeof card.cardmarketPrice === 'number' ? card.cardmarketPrice.toFixed(2) : 'N/A'}</p>
+                                <p className="mb-2">**eBay Prijs:** €{typeof card.ebayPrice === 'number' ? card.ebayPrice.toFixed(2) : 'N/A'}</p>
+                                <p className="mb-2">**Laatst Bijgewerkt:** {new Date(card.lastUpdated).toLocaleDateString('nl-NL')} om {new Date(card.lastUpdated).toLocaleTimeString('nl-NL')}</p>
+
+                                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label htmlFor="editQuantity" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hoeveelheid</label>
+                                        <input
+                                            type="number"
+                                            id="editQuantity"
+                                            value={editQuantity}
+                                            onChange={(e) => setEditQuantity(parseInt(e.target.value) || 0)}
+                                            min="1"
+                                            className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label htmlFor="editPurchasePrice" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Aankoopprijs (€)</label>
+                                        <input
+                                            type="number"
+                                            id="editPurchasePrice"
+                                            value={editPurchasePrice}
+                                            onChange={(e) => setEditPurchasePrice(parseFloat(e.target.value) || 0)}
+                                            step="0.01"
+                                            min="0"
+                                            className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    />
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={handleUpdateCard}
+                                    className="w-full mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out"
+                                >
+                                    <i className="fas fa-save mr-2"></i> Sla Wijzigingen Op
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Render de React applicatie in de 'root' div
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
